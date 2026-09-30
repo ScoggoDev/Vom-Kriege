@@ -1,7 +1,8 @@
 """
 Motor vectorizado de batallas napoleónicas de línea.
 Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
-del flag Config.moral_activa). Sin munición limitada, sin cansancio, sin terreno.
+del flag Config.moral_activa). Capa 3: elevación y cobertura (detrás de
+Config.terreno_activo). Sin munición limitada, sin cansancio, sin clima.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -40,6 +41,20 @@ class Config:
     moral_umbral_sd: float = 0.2               # inventado: heterogeneidad del umbral (Granovetter 1978), sin calibrar
     moral_velocidad_huida_m_tick: float = 6.0  # inventado: mas rapido que la marcha ordinaria (4.5), sin calibrar
     moral_colapso_umbral: float = 0.15         # inventado: calibrado contra CDB90, ver informe de fase 1
+    # --- terreno: elevacion y cobertura (fase 2a) ---
+    terreno_activo: bool = False                    # inventado: flag maestro
+    terreno_cresta_y_m: float = 125.0               # inventado: centro de la cresta (mitad del mapa por defecto)
+    terreno_cresta_ancho_m: float = 40.0            # inventado: que tan extendida es la subida en y
+    terreno_cresta_alto_m: float = 8.0              # inventado: altura de la cresta en metros
+    terreno_bonus_punteria_por_m: float = 0.015     # inventado: mejora de punteria por metro de ventaja de altura
+    terreno_bonus_alcance_por_m: float = 0.01       # inventado: mejora de alcance por metro de altura propia
+    terreno_frena_por_m_subida: float = 0.05        # inventado: reduccion de la marcha por metro que se sube en el tick
+    terreno_cobertura_y_centro_m: float = 125.0     # inventado: centro en y de la zona de cobertura (bosque/granja)
+    terreno_cobertura_y_ancho_m: float = 20.0       # inventado
+    terreno_cobertura_x_centro_m: float = 0.0       # inventado
+    terreno_cobertura_x_ancho_m: float = 30.0       # inventado
+    terreno_cobertura_reduccion: float = 0.5        # inventado: multiplica la prob. de impacto de quien esta en cobertura
+    terreno_cobertura_bonus_moral: float = 0.3      # inventado: reduce la fraccion de bajas percibida por quien esta en cobertura
 
 
 class Batalla:
@@ -100,6 +115,18 @@ class Batalla:
         idx = (np.arange(self.B)[:, None, None] * 2 + np.arange(2)[None, :, None]) * U + self.unidad[None]
         return np.bincount(idx[vivo], minlength=self.B * 2 * U).reshape(self.B, 2, U)
 
+    # --- terreno (fase 2a): perfil de elevacion en y, cobertura en una franja x,y ---
+    def altura(self, y):
+        """Perfil de elevacion: una sola cresta con forma de campana centrada en terreno_cresta_y_m.
+        Es un perfil en y solamente (no en x): una linea de cresta que cruza todo el frente."""
+        cfg = self.cfg
+        return cfg.terreno_cresta_alto_m * np.exp(-((y - cfg.terreno_cresta_y_m) / cfg.terreno_cresta_ancho_m) ** 2)
+
+    def en_cobertura(self, x, y):
+        cfg = self.cfg
+        return ((np.abs(y - cfg.terreno_cobertura_y_centro_m) < cfg.terreno_cobertura_y_ancho_m / 2) &
+                (np.abs(x - cfg.terreno_cobertura_x_centro_m) < cfg.terreno_cobertura_x_ancho_m / 2))
+
     # --- geometría ---
     def posiciones(self):
         x = self.x_unidad[:, self.unidad][[0, 1], [0, 1]] + self.dx          # (2,N)
@@ -151,11 +178,32 @@ class Batalla:
         else:  # al bulto: puede tocarle un hueco donde antes había un hombre
             n_e = np.take_along_axis(np.broadcast_to(self.tam_u[[1, 0]], (B, 2, U)), tu, 2)
             blanco = np.minimum(ini_e + (r * n_e).astype(int), N - 1)
-        d_blanco = np.hypot(x - np.take_along_axis(x[:, [1, 0]], blanco, 2),
-                            y - np.take_along_axis(y[:, [1, 0]], blanco, 2))
+        x_blanco = np.take_along_axis(x[:, [1, 0]], blanco, 2)
+        y_blanco = np.take_along_axis(y[:, [1, 0]], blanco, 2)
+        d_blanco = np.hypot(x - x_blanco, y - y_blanco)
+
+        # Terreno (fase 2a): ventaja de altura, cresta que bloquea la linea de tiro
+        # (defensa en contrapendiente), y cobertura que protege a quien la ocupa.
+        if cfg.terreno_activo:
+            h_propia = self.altura(y)
+            h_blanco = self.altura(y_blanco)
+            bonus_punteria = 1 + cfg.terreno_bonus_punteria_por_m * np.clip(h_propia - h_blanco, 0, None)
+            alcance_efectivo = cfg.alcance_max_m * (1 + cfg.terreno_bonus_alcance_por_m * np.clip(h_propia, 0, None))
+            y_cresta = cfg.terreno_cresta_y_m
+            entre_cresta = (np.minimum(y, y_blanco) < y_cresta) & (y_cresta < np.maximum(y, y_blanco))
+            t = (y_cresta - y) / np.where(y_blanco != y, y_blanco - y, 1.0)
+            h_linea_tiro = h_propia + t * (h_blanco - h_propia)
+            h_cresta = self.altura(np.full_like(y, y_cresta))
+            bloqueada = entre_cresta & (h_cresta > h_linea_tiro + 1.0)  # margen de 1 m
+            mult_cobertura = np.where(self.en_cobertura(x_blanco, y_blanco), cfg.terreno_cobertura_reduccion, 1.0)
+        else:
+            bonus_punteria, alcance_efectivo, mult_cobertura = 1.0, cfg.alcance_max_m, 1.0
+            bloqueada = np.zeros_like(d_blanco, dtype=bool)
+
         listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER)
-        dispara = listo & tiene_s & (d_blanco <= cfg.alcance_max_m)
+        dispara = listo & tiene_s & (d_blanco <= alcance_efectivo) & ~bloqueada
         p = self.punteria * np.where(herido, cfg.penal_herido_punteria, 1.0) * cfg.p_max / (1 + (d_blanco / cfg.d50_m) ** 2)
+        p = p * bonus_punteria * mult_cobertura
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
         impacto = dispara & blanco_vivo & (self.rng.random((B, 2, N)) < p)
         grave = self.rng.random((B, 2, N)) < cfg.p_herida_grave
@@ -171,6 +219,10 @@ class Batalla:
             perdidos_u = self.vivos_por_unidad(perdido)
             frac_perdida_u = perdidos_u / np.maximum(self.tam_u[None], 1)
             frac_perdida_s = np.take_along_axis(frac_perdida_u, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+            if cfg.terreno_activo:
+                propia_cobertura = self.en_cobertura(x, y)
+                frac_perdida_s = np.where(propia_cobertura, frac_perdida_s * (1 - cfg.terreno_cobertura_bonus_moral),
+                                           frac_perdida_s)
             vivo_actual = self.salud > 0
             nueva_huida = activa & vivo_actual & ~self.huyendo & (frac_perdida_s > self.umbral_huida)
             self.huyendo |= nueva_huida
@@ -182,8 +234,14 @@ class Batalla:
         self.recarga = np.where(dispara, cfg.recarga_ticks + extra, np.maximum(self.recarga - 1, 0)).astype(np.int16)
 
         # Movimiento de unidades que avanzan (y que conservan alguien vivo)
+        if cfg.terreno_activo:
+            y_siguiente_u = self.y_unidad + self.dir[None, :, None] * cfg.marcha_m_tick
+            subida = np.clip(self.altura(y_siguiente_u) - self.altura(self.y_unidad), 0, None)
+            factor_pendiente = np.clip(1 - cfg.terreno_frena_por_m_subida * subida, 0.2, 1.0)
+        else:
+            factor_pendiente = 1.0
         mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None]
-        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick
+        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente
 
         if self.grabar:
             self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
