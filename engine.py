@@ -2,8 +2,9 @@
 Motor vectorizado de batallas napoleónicas de línea.
 Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
 del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
-río con vados y pantano (Config.rio_activo, Config.pantano_activo). Sin
-movimiento lateral, sin munición limitada, sin cansancio, sin clima.
+río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
+(Config.clima: "seco"/"lluvia"/"nieve"). Sin movimiento lateral, sin munición
+limitada, sin cansancio, sin humo.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -69,6 +70,13 @@ class Config:
     pantano_x_centro_m: float = 0.0            # inventado
     pantano_x_ancho_m: float = 200.0           # inventado
     pantano_factor_marcha: float = 0.4         # inventado: multiplica la marcha dentro del pantano
+    # --- clima (fase 3) ---
+    clima: str = "seco"                            # "seco" (default, sin efecto), "lluvia" o "nieve"; fuente de la categoria: CDB90 (seco/humedo)
+    clima_lluvia_p_fallo: float = 0.15             # inventado: prob. de que la polvora mojada haga fallar el disparo, sin cifra de fuente
+    clima_lluvia_factor_marcha: float = 0.8        # inventado: el barro frena la marcha
+    clima_lluvia_factor_alcance: float = 0.85      # inventado: menos visibilidad reduce el alcance efectivo
+    clima_nieve_factor_marcha: float = 0.6         # inventado: la nieve frena mas que el barro
+    clima_nieve_factor_alcance: float = 0.7        # inventado: la nieve reduce mas la visibilidad que la lluvia
 
 
 class Batalla:
@@ -230,8 +238,19 @@ class Batalla:
             bonus_punteria, alcance_efectivo, mult_cobertura = 1.0, cfg.alcance_max_m, 1.0
             bloqueada = np.zeros_like(d_blanco, dtype=bool)
 
+        # Clima (fase 3): la lluvia moja la polvora (fallo de encendido) y ambas
+        # (lluvia, nieve) reducen la visibilidad (alcance efectivo).
+        if cfg.clima == "lluvia":
+            alcance_efectivo = alcance_efectivo * cfg.clima_lluvia_factor_alcance
+            fallo_clima = self.rng.random((B, 2, N)) < cfg.clima_lluvia_p_fallo
+        elif cfg.clima == "nieve":
+            alcance_efectivo = alcance_efectivo * cfg.clima_nieve_factor_alcance
+            fallo_clima = np.zeros_like(d_blanco, dtype=bool)
+        else:
+            fallo_clima = np.zeros_like(d_blanco, dtype=bool)
+
         listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER)
-        dispara = listo & tiene_s & (d_blanco <= alcance_efectivo) & ~bloqueada
+        dispara = listo & tiene_s & (d_blanco <= alcance_efectivo) & ~bloqueada & ~fallo_clima
         p = self.punteria * np.where(herido, cfg.penal_herido_punteria, 1.0) * cfg.p_max / (1 + (d_blanco / cfg.d50_m) ** 2)
         p = p * bonus_punteria * mult_cobertura
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
@@ -286,8 +305,14 @@ class Batalla:
             bloqueado_por_rio = cruzando_franja & ~en_vado_u
         else:
             bloqueado_por_rio = np.zeros_like(self.y_unidad, dtype=bool)
+        if cfg.clima == "lluvia":
+            factor_clima = cfg.clima_lluvia_factor_marcha
+        elif cfg.clima == "nieve":
+            factor_clima = cfg.clima_nieve_factor_marcha
+        else:
+            factor_clima = 1.0
         mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
-        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano
+        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano * factor_clima
 
         if self.grabar:
             self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
