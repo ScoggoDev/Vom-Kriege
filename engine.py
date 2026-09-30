@@ -4,7 +4,7 @@ Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
 del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
 río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
 (Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa),
-cansancio (Config.cansancio_activo). Sin movimiento lateral, sin humo.
+cansancio (Config.cansancio_activo), humo (Config.humo_activo). Sin movimiento lateral.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -88,6 +88,11 @@ class Config:
     cansancio_penal_punteria: float = 0.4      # inventado: la punteria se multiplica por (1 - esto * cansancio)
     cansancio_penal_recarga: float = 3.0       # inventado: ticks extra de recarga = esto * cansancio
     cansancio_penal_moral: float = 0.25        # inventado: se suma a la fraccion de bajas percibida, proporcional al cansancio
+    # --- humo (fase 4c) ---
+    humo_activo: bool = False              # inventado: flag maestro
+    humo_por_disparo: float = 0.15         # inventado: cuanto humo agrega cada disparo a la nube de su unidad
+    humo_disipacion: float = 0.15          # inventado: fraccion de la nube que se disipa por tick
+    humo_penal_punteria: float = 0.4       # inventado: reduce la punteria segun el humo propio mas el del blanco
 
 
 class Batalla:
@@ -133,6 +138,7 @@ class Batalla:
         else:
             self.municion = None
         self.cansancio = np.zeros((B, 2, N), np.float32)
+        self.humo_unidad = np.zeros((B, 2, U), np.float32)
         self.huyendo = np.zeros((B, 2, N), bool)
         self.huida_y = np.zeros((B, 2, N), np.float32)
         if cfg.moral_activa:
@@ -275,6 +281,11 @@ class Batalla:
         p = p * bonus_punteria * mult_cobertura
         if cfg.cansancio_activo:
             p = p * np.clip(1 - cfg.cansancio_penal_punteria * self.cansancio, 0.1, 1.0)
+        if cfg.humo_activo:
+            # humo acumulado hasta el tick anterior (el de este tick recien se genera abajo)
+            humo_propio_s = np.take_along_axis(self.humo_unidad, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+            humo_blanco_s = np.take_along_axis(self.humo_unidad[:, [1, 0]], tu, 2)
+            p = p / (1 + cfg.humo_penal_punteria * (humo_propio_s + humo_blanco_s))
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
         impacto = dispara & blanco_vivo & (self.rng.random((B, 2, N)) < p)
         grave = self.rng.random((B, 2, N)) < cfg.p_herida_grave
@@ -282,6 +293,11 @@ class Batalla:
         idx = (np.arange(B)[:, None, None] * 2 + np.array([1, 0])[None, :, None]) * N + blanco
         dano = np.bincount(idx[impacto], weights=dano_hecho[impacto], minlength=B * 2 * N).reshape(B, 2, N)
         self.salud = np.clip(self.salud - dano, 0, 2).astype(np.int8)
+
+        if cfg.humo_activo:
+            disparos_u = self.vivos_por_unidad(dispara)
+            self.humo_unidad = (self.humo_unidad * (1 - cfg.humo_disipacion) +
+                                 disparos_u * cfg.humo_por_disparo).astype(np.float32)
 
         # Moral: cascada de huida tipo Granovetter dentro de la propia unidad (ver docs/diseno.md).
         # Umbral heterogeneo por soldado, sorteado una vez al inicio. Huida irreversible en la batalla.
