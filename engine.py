@@ -36,10 +36,10 @@ class Config:
     max_ticks: int = 360             # 30 minutos
     # --- moral (fase 1) ---
     moral_activa: bool = False                 # inventado: flag maestro, apaga toda la mecanica
-    moral_umbral_media: float = 0.5            # inventado: a calibrar contra CDB90
-    moral_umbral_sd: float = 0.2               # inventado: heterogeneidad del umbral (Granovetter 1978)
-    moral_velocidad_huida_m_tick: float = 6.0  # inventado: mas rapido que la marcha ordinaria (4.5)
-    moral_colapso_umbral: float = 0.5          # inventado: a calibrar contra CDB90
+    moral_umbral_media: float = 0.4            # inventado: calibrado contra CDB90, ver informe de fase 1
+    moral_umbral_sd: float = 0.2               # inventado: heterogeneidad del umbral (Granovetter 1978), sin calibrar
+    moral_velocidad_huida_m_tick: float = 6.0  # inventado: mas rapido que la marcha ordinaria (4.5), sin calibrar
+    moral_colapso_umbral: float = 0.15         # inventado: calibrado contra CDB90, ver informe de fase 1
 
 
 class Batalla:
