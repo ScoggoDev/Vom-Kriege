@@ -3,8 +3,8 @@ Motor vectorizado de batallas napoleónicas de línea.
 Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
 del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
 río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
-(Config.clima: "seco"/"lluvia"/"nieve"). Sin movimiento lateral, sin munición
-limitada, sin cansancio, sin humo.
+(Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa).
+Sin movimiento lateral, sin cansancio, sin humo.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -77,6 +77,9 @@ class Config:
     clima_lluvia_factor_alcance: float = 0.85      # inventado: menos visibilidad reduce el alcance efectivo
     clima_nieve_factor_marcha: float = 0.6         # inventado: la nieve frena mas que el barro
     clima_nieve_factor_alcance: float = 0.7        # inventado: la nieve reduce mas la visibilidad que la lluvia
+    # --- municion limitada (fase 4a) ---
+    municion_activa: bool = False              # inventado: flag maestro
+    municion_inicial: int = 60                 # cifra comun citada para la dotacion de un soldado de la epoca, sin verificar con fuente primaria
 
 
 class Batalla:
@@ -117,6 +120,10 @@ class Batalla:
         self.salud = np.where(self.existe, 2, 0)[None].repeat(B, 0).astype(np.int8)  # 2 sano, 1 herido, 0 fuera
         self.punteria = np.clip(self.rng.normal(cfg.punteria_media, cfg.punteria_sd, (B, 2, N)), 0.2, 2).astype(np.float32)
         self.recarga = np.zeros((B, 2, N), np.int16)   # todos arrancan con el arma cargada
+        if cfg.municion_activa:
+            self.municion = np.full((B, 2, N), cfg.municion_inicial, np.int32)
+        else:
+            self.municion = None
         self.huyendo = np.zeros((B, 2, N), bool)
         self.huida_y = np.zeros((B, 2, N), np.float32)
         if cfg.moral_activa:
@@ -250,7 +257,11 @@ class Batalla:
             fallo_clima = np.zeros_like(d_blanco, dtype=bool)
 
         listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER)
+        if cfg.municion_activa:
+            listo = listo & (self.municion > 0)
         dispara = listo & tiene_s & (d_blanco <= alcance_efectivo) & ~bloqueada & ~fallo_clima
+        if cfg.municion_activa:
+            self.municion -= dispara
         p = self.punteria * np.where(herido, cfg.penal_herido_punteria, 1.0) * cfg.p_max / (1 + (d_blanco / cfg.d50_m) ** 2)
         p = p * bonus_punteria * mult_cobertura
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
