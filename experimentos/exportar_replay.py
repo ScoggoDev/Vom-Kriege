@@ -15,7 +15,7 @@ from generals import avanzar_y_disparar
 salida = sys.argv[1] if len(sys.argv) > 1 else "visor/replay.json"
 semilla = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
-cfg = Config()
+cfg = Config(moral_activa=True, moral_umbral_media=0.4)
 general = avanzar_y_disparar(cfg.alcance_max_m * 0.6)
 b = Batalla(cfg, B=1, seed=semilla, grabar=True).correr(general, general)
 
@@ -26,8 +26,8 @@ soldados = [
 ]
 ticks = [
     {"salud": salud.tolist(), "y_unidad": y_unidad.tolist(),
-     "dispara": dispara.tolist(), "impacto": impacto.tolist()}
-    for salud, y_unidad, dispara, impacto in b.cuadros
+     "dispara": dispara.tolist(), "impacto": impacto.tolist(), "huida_y": huida_y.tolist()}
+    for salud, y_unidad, dispara, impacto, huida_y in b.cuadros
 ]
 datos = {
     "meta": {

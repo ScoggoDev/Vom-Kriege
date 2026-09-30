@@ -41,6 +41,7 @@
   <span><span class="punto" style="background:#c0392b"></span> bando 1 sano</span>
   <span><span class="punto" style="background:#e6a3a3"></span> bando 1 herido</span>
   <span><span class="punto" style="background:#888;width:5px;height:5px"></span> fuera de combate</span>
+  <span><span class="punto" style="background:#2a6fdb;opacity:0.45"></span> huyendo (mas transparente)</span>
 </div>
 
 <script>
@@ -82,7 +83,8 @@ function posicion(s, frame) {
   const xu = datos.meta.x_unidad[s.lado][s.unidad];
   const yu = frame.y_unidad[s.lado][s.unidad];
   const dir = datos.meta.dir[s.lado];
-  return { x: xu + s.dx, y: yu - dir * s.fila };
+  const huidaY = frame.huida_y ? frame.huida_y[s.lado][s.idx] : 0;
+  return { x: xu + s.dx, y: yu - dir * s.fila + huidaY };
 }
 
 function calcularEscala(datos) {
@@ -118,11 +120,14 @@ function dibujar(i) {
     const px = p.x * escala.k + escala.offX;
     const py = p.y * escala.k + escala.offY;
     const salud = frame.salud[s.lado][s.idx];
+    const huyendo = frame.huida_y && frame.huida_y[s.lado][s.idx] !== 0;
     const radio = salud === 0 ? 2 : 3.5;
+    ctx.globalAlpha = huyendo ? 0.45 : 1;
     ctx.fillStyle = colorDe(s.lado, salud);
     ctx.beginPath();
     ctx.arc(px, py, radio, 0, 2 * Math.PI);
     ctx.fill();
+    ctx.globalAlpha = 1;
     if (frame.impacto[s.lado][s.idx]) {
       ctx.strokeStyle = "#f1c40f";
       ctx.lineWidth = 1.5;
