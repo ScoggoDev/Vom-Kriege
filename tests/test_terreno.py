@@ -1,6 +1,6 @@
 """
 Tests de terreno: elevacion, defensa en contrapendiente y cobertura (fase 2a,
-ver docs/diseno.md seccion 3 y docs/informe_fase2_terreno.md).
+ver docs/diseno.md seccion 3 y docs/informe_fase2a_terreno.md).
 """
 import numpy as np
 import pytest

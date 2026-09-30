@@ -1,8 +1,9 @@
 """
 Motor vectorizado de batallas napoleónicas de línea.
 Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
-del flag Config.moral_activa). Capa 3: elevación y cobertura (detrás de
-Config.terreno_activo). Sin munición limitada, sin cansancio, sin clima.
+del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
+río con vados y pantano (Config.rio_activo, Config.pantano_activo). Sin
+movimiento lateral, sin munición limitada, sin cansancio, sin clima.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -55,6 +56,19 @@ class Config:
     terreno_cobertura_x_ancho_m: float = 30.0       # inventado
     terreno_cobertura_reduccion: float = 0.5        # inventado: multiplica la prob. de impacto de quien esta en cobertura
     terreno_cobertura_bonus_moral: float = 0.3      # inventado: reduce la fraccion de bajas percibida por quien esta en cobertura
+    # --- rio y pantano (fase 2b) ---
+    rio_activo: bool = False                   # inventado: flag maestro
+    rio_y_centro_m: float = 150.0              # inventado: posicion en y del rio
+    rio_ancho_m: float = 10.0                  # inventado: ancho de la franja intransitable
+    rio_vado_x_centros: tuple = (0.0,)         # inventado: posiciones en x de los vados/puentes (huecos en el rio)
+    rio_vado_ancho_m: float = 15.0             # inventado: ancho de cada vado
+    rio_penalidad_moral: float = 0.15          # inventado: se suma a la fraccion de bajas percibida al cruzar bajo fuego
+    pantano_activo: bool = False               # inventado: flag maestro
+    pantano_y_centro_m: float = 150.0          # inventado
+    pantano_y_ancho_m: float = 20.0            # inventado
+    pantano_x_centro_m: float = 0.0            # inventado
+    pantano_x_ancho_m: float = 200.0           # inventado
+    pantano_factor_marcha: float = 0.4         # inventado: multiplica la marcha dentro del pantano
 
 
 class Batalla:
@@ -126,6 +140,22 @@ class Batalla:
         cfg = self.cfg
         return ((np.abs(y - cfg.terreno_cobertura_y_centro_m) < cfg.terreno_cobertura_y_ancho_m / 2) &
                 (np.abs(x - cfg.terreno_cobertura_x_centro_m) < cfg.terreno_cobertura_x_ancho_m / 2))
+
+    # --- rio y pantano (fase 2b) ---
+    def en_franja_rio(self, y):
+        return np.abs(y - self.cfg.rio_y_centro_m) < self.cfg.rio_ancho_m / 2
+
+    def en_vado(self, x):
+        cfg = self.cfg
+        en_alguno = np.zeros_like(np.asarray(x, dtype=np.float64), dtype=bool)
+        for cx in cfg.rio_vado_x_centros:
+            en_alguno = en_alguno | (np.abs(x - cx) < cfg.rio_vado_ancho_m / 2)
+        return en_alguno
+
+    def en_pantano(self, x, y):
+        cfg = self.cfg
+        return ((np.abs(y - cfg.pantano_y_centro_m) < cfg.pantano_y_ancho_m / 2) &
+                (np.abs(x - cfg.pantano_x_centro_m) < cfg.pantano_x_ancho_m / 2))
 
     # --- geometría ---
     def posiciones(self):
@@ -223,6 +253,10 @@ class Batalla:
                 propia_cobertura = self.en_cobertura(x, y)
                 frac_perdida_s = np.where(propia_cobertura, frac_perdida_s * (1 - cfg.terreno_cobertura_bonus_moral),
                                            frac_perdida_s)
+            if cfg.rio_activo:
+                cruzando_s = np.take_along_axis(self.en_franja_rio(self.y_unidad),
+                                                 np.broadcast_to(self.unidad, (B, 2, N)), 2)
+                frac_perdida_s = np.where(cruzando_s, frac_perdida_s + cfg.rio_penalidad_moral, frac_perdida_s)
             vivo_actual = self.salud > 0
             nueva_huida = activa & vivo_actual & ~self.huyendo & (frac_perdida_s > self.umbral_huida)
             self.huyendo |= nueva_huida
@@ -240,8 +274,20 @@ class Batalla:
             factor_pendiente = np.clip(1 - cfg.terreno_frena_por_m_subida * subida, 0.2, 1.0)
         else:
             factor_pendiente = 1.0
-        mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None]
-        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente
+        if cfg.pantano_activo:
+            en_pantano_u = self.en_pantano(self.x_unidad[None], self.y_unidad)
+            factor_pantano = np.where(en_pantano_u, cfg.pantano_factor_marcha, 1.0)
+        else:
+            factor_pantano = 1.0
+        if cfg.rio_activo:
+            y_siguiente_u = self.y_unidad + self.dir[None, :, None] * cfg.marcha_m_tick
+            cruzando_franja = self.en_franja_rio(self.y_unidad) | self.en_franja_rio(y_siguiente_u)
+            en_vado_u = self.en_vado(self.x_unidad)[None]
+            bloqueado_por_rio = cruzando_franja & ~en_vado_u
+        else:
+            bloqueado_por_rio = np.zeros_like(self.y_unidad, dtype=bool)
+        mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
+        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano
 
         if self.grabar:
             self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
