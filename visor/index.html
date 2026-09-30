@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Visor de batallas</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #1b1b1b; color: #eee; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  #panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  #panel label { font-size: 13px; color: #ccc; }
+  #info { font-size: 13px; color: #ccc; margin-bottom: 8px; }
+  canvas { background: #f2ead6; border: 1px solid #444; display: block; }
+  button { cursor: pointer; }
+  #slider { width: 320px; }
+  .leyenda { display: flex; gap: 16px; font-size: 12px; color: #ccc; margin-top: 8px; }
+  .leyenda span { display: inline-flex; align-items: center; gap: 4px; }
+  .punto { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>Visor de repeticiones (napoleon v0)</h1>
+<div id="panel">
+  <input type="file" id="archivo" accept="application/json">
+  <button id="jugar" disabled>Reproducir</button>
+  <input type="range" id="slider" min="0" max="0" value="0" disabled>
+  <span id="tick">tick 0</span>
+  <label>Velocidad
+    <select id="velocidad">
+      <option value="1">1 tick/s</option>
+      <option value="4" selected>4 ticks/s</option>
+      <option value="10">10 ticks/s</option>
+      <option value="30">30 ticks/s</option>
+    </select>
+  </label>
+</div>
+<div id="info">Elegi un archivo JSON exportado con experimentos/exportar_replay.py</div>
+<canvas id="lienzo" width="900" height="700"></canvas>
+<div class="leyenda">
+  <span><span class="punto" style="background:#2a6fdb"></span> bando 0 sano</span>
+  <span><span class="punto" style="background:#9fc3f5"></span> bando 0 herido</span>
+  <span><span class="punto" style="background:#c0392b"></span> bando 1 sano</span>
+  <span><span class="punto" style="background:#e6a3a3"></span> bando 1 herido</span>
+  <span><span class="punto" style="background:#888;width:5px;height:5px"></span> fuera de combate</span>
+</div>
+
+<script>
+let datos = null, escala = null, tickActual = 0, reproduciendo = false, ultimoFrame = 0;
+
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+const elSlider = document.getElementById("slider");
+const elTick = document.getElementById("tick");
+const elJugar = document.getElementById("jugar");
+const elInfo = document.getElementById("info");
+const elVelocidad = document.getElementById("velocidad");
+
+document.getElementById("archivo").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  file.text().then((texto) => cargar(JSON.parse(texto)));
+});
+
+// intento de conveniencia si el visor se sirve por http:// junto a un replay.json
+fetch("replay.json").then((r) => r.ok ? r.json() : null).then((j) => { if (j) cargar(j); }).catch(() => {});
+
+function cargar(json) {
+  datos = json;
+  tickActual = 0;
+  escala = calcularEscala(datos);
+  elSlider.max = datos.ticks.length - 1;
+  elSlider.value = 0;
+  elSlider.disabled = false;
+  elJugar.disabled = false;
+  const g = datos.meta.ganador;
+  const gTxto = g === -1 ? "sin definir (tiempo agotado)" : "bando " + g;
+  elInfo.textContent = `${datos.ticks.length} ticks (${datos.ticks.length * datos.meta.tick_s} s simulados), `
+    + `${datos.soldados.length} soldados, ganador: ${gTxto}`;
+  dibujar(0);
+}
+
+function posicion(s, frame) {
+  const xu = datos.meta.x_unidad[s.lado][s.unidad];
+  const yu = frame.y_unidad[s.lado][s.unidad];
+  const dir = datos.meta.dir[s.lado];
+  return { x: xu + s.dx, y: yu - dir * s.fila };
+}
+
+function calcularEscala(datos) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const frame of datos.ticks) {
+    for (const s of datos.soldados) {
+      const p = posicion(s, frame);
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+  }
+  const margen = 10;
+  minX -= margen; maxX += margen; minY -= margen; maxY += margen;
+  const w = canvas.width, h = canvas.height;
+  const k = Math.min(w / (maxX - minX), h / (maxY - minY));
+  const offX = (w - (maxX - minX) * k) / 2 - minX * k;
+  const offY = (h - (maxY - minY) * k) / 2 - minY * k;
+  return { k, offX, offY };
+}
+
+function colorDe(lado, salud) {
+  if (salud === 0) return "#888";
+  if (lado === 0) return salud === 2 ? "#2a6fdb" : "#9fc3f5";
+  return salud === 2 ? "#c0392b" : "#e6a3a3";
+}
+
+function dibujar(i) {
+  const frame = datos.ticks[i];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (let idx = 0; idx < datos.soldados.length; idx++) {
+    const s = datos.soldados[idx];
+    const p = posicion(s, frame);
+    const px = p.x * escala.k + escala.offX;
+    const py = p.y * escala.k + escala.offY;
+    const salud = frame.salud[s.lado][s.idx];
+    const radio = salud === 0 ? 2 : 3.5;
+    ctx.fillStyle = colorDe(s.lado, salud);
+    ctx.beginPath();
+    ctx.arc(px, py, radio, 0, 2 * Math.PI);
+    ctx.fill();
+    if (frame.impacto[s.lado][s.idx]) {
+      ctx.strokeStyle = "#f1c40f";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(px, py, radio + 3, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+  }
+  elTick.textContent = `tick ${i} (${i * datos.meta.tick_s} s)`;
+  elSlider.value = i;
+}
+
+elSlider.addEventListener("input", () => {
+  reproduciendo = false;
+  elJugar.textContent = "Reproducir";
+  tickActual = parseInt(elSlider.value, 10);
+  dibujar(tickActual);
+});
+
+elJugar.addEventListener("click", () => {
+  reproduciendo = !reproduciendo;
+  elJugar.textContent = reproduciendo ? "Pausar" : "Reproducir";
+  if (reproduciendo) {
+    ultimoFrame = performance.now();
+    requestAnimationFrame(animar);
+  }
+});
+
+function animar(ahora) {
+  if (!reproduciendo) return;
+  const ticksPorSeg = parseFloat(elVelocidad.value);
+  if (ahora - ultimoFrame >= 1000 / ticksPorSeg) {
+    ultimoFrame = ahora;
+    if (tickActual < datos.ticks.length - 1) {
+      tickActual++;
+      dibujar(tickActual);
+    } else {
+      reproduciendo = false;
+      elJugar.textContent = "Reproducir";
+    }
+  }
+  if (reproduciendo) requestAnimationFrame(animar);
+}
+</script>
+</body>
+</html>
