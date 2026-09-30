@@ -1,6 +1,7 @@
 """
 Motor vectorizado de batallas napoleónicas de línea.
-Capa 1: salud y puntería (sin moral, sin munición limitada, sin cansancio).
+Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
+del flag Config.moral_activa). Sin munición limitada, sin cansancio, sin terreno.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -33,6 +34,12 @@ class Config:
     penal_herido_punteria: float = 0.6
     penal_herido_recarga: int = 2
     max_ticks: int = 360             # 30 minutos
+    # --- moral (fase 1) ---
+    moral_activa: bool = False                 # inventado: flag maestro, apaga toda la mecanica
+    moral_umbral_media: float = 0.5            # inventado: a calibrar contra CDB90
+    moral_umbral_sd: float = 0.2               # inventado: heterogeneidad del umbral (Granovetter 1978)
+    moral_velocidad_huida_m_tick: float = 6.0  # inventado: mas rapido que la marcha ordinaria (4.5)
+    moral_colapso_umbral: float = 0.5          # inventado: a calibrar contra CDB90
 
 
 class Batalla:
@@ -73,6 +80,14 @@ class Batalla:
         self.salud = np.where(self.existe, 2, 0)[None].repeat(B, 0).astype(np.int8)  # 2 sano, 1 herido, 0 fuera
         self.punteria = np.clip(self.rng.normal(cfg.punteria_media, cfg.punteria_sd, (B, 2, N)), 0.2, 2).astype(np.float32)
         self.recarga = np.zeros((B, 2, N), np.int16)   # todos arrancan con el arma cargada
+        self.huyendo = np.zeros((B, 2, N), bool)
+        self.huida_y = np.zeros((B, 2, N), np.float32)
+        if cfg.moral_activa:
+            self.umbral_huida = np.clip(
+                self.rng.normal(cfg.moral_umbral_media, cfg.moral_umbral_sd, (B, 2, N)), 0.05, 0.95
+            ).astype(np.float32)
+        else:
+            self.umbral_huida = None  # no se sortea: con el flag apagado, ni se usa ni se consume el rng
         self.t = 0
         self.terminada = np.zeros(B, bool)
         self.ganador = np.full(B, -1)
@@ -90,7 +105,7 @@ class Batalla:
         x = self.x_unidad[:, self.unidad][[0, 1], [0, 1]] + self.dx          # (2,N)
         x = np.broadcast_to(x, (self.B, 2, self.N))
         yu = np.take_along_axis(self.y_unidad, np.broadcast_to(self.unidad, (self.B, 2, self.N)), 2)
-        y = yu - self.dir[None, :, None] * self.fila[None]
+        y = yu - self.dir[None, :, None] * self.fila[None] + self.huida_y
         return x, y
 
     def distancia_unidades_al_enemigo(self):
@@ -138,7 +153,7 @@ class Batalla:
             blanco = np.minimum(ini_e + (r * n_e).astype(int), N - 1)
         d_blanco = np.hypot(x - np.take_along_axis(x[:, [1, 0]], blanco, 2),
                             y - np.take_along_axis(y[:, [1, 0]], blanco, 2))
-        listo = activa & vivo & (self.recarga == 0) & (orden_s == SOSTENER)
+        listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER)
         dispara = listo & tiene_s & (d_blanco <= cfg.alcance_max_m)
         p = self.punteria * np.where(herido, cfg.penal_herido_punteria, 1.0) * cfg.p_max / (1 + (d_blanco / cfg.d50_m) ** 2)
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
@@ -149,6 +164,19 @@ class Batalla:
         dano = np.bincount(idx[impacto], weights=dano_hecho[impacto], minlength=B * 2 * N).reshape(B, 2, N)
         self.salud = np.clip(self.salud - dano, 0, 2).astype(np.int8)
 
+        # Moral: cascada de huida tipo Granovetter dentro de la propia unidad (ver docs/diseno.md).
+        # Umbral heterogeneo por soldado, sorteado una vez al inicio. Huida irreversible en la batalla.
+        if cfg.moral_activa:
+            perdido = (self.salud == 0) | self.huyendo
+            perdidos_u = self.vivos_por_unidad(perdido)
+            frac_perdida_u = perdidos_u / np.maximum(self.tam_u[None], 1)
+            frac_perdida_s = np.take_along_axis(frac_perdida_u, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+            vivo_actual = self.salud > 0
+            nueva_huida = activa & vivo_actual & ~self.huyendo & (frac_perdida_s > self.umbral_huida)
+            self.huyendo |= nueva_huida
+            self.huida_y -= np.where(self.huyendo & activa,
+                                      self.dir[None, :, None] * cfg.moral_velocidad_huida_m_tick, 0.0)
+
         # Recarga
         extra = (self.rng.random((B, 2, N)) < 0.5) + herido * cfg.penal_herido_recarga
         self.recarga = np.where(dispara, cfg.recarga_ticks + extra, np.maximum(self.recarga - 1, 0)).astype(np.int16)
@@ -158,13 +186,21 @@ class Batalla:
         self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick
 
         if self.grabar:
-            self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(), impacto[0].copy()))
+            self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
+                                  impacto[0].copy(), self.huida_y[0].copy()))
 
-        # Fin de batalla
+        # Fin de batalla: aniquilacion total, colapso de moral (si esta activa), o tiempo agotado
         self.t += 1
         vivos = (self.salud > 0).sum(-1)
-        fin = ~self.terminada & ((vivos == 0).any(-1) | (self.t >= cfg.max_ticks))
-        g = np.where((vivos[:, 1] == 0) & (vivos[:, 0] > 0), 0, np.where((vivos[:, 0] == 0) & (vivos[:, 1] > 0), 1, -1))
+        if cfg.moral_activa:
+            aptos = ((self.salud > 0) & ~self.huyendo).sum(-1)
+            n0 = np.array(cfg.n_soldados, dtype=np.float32)
+            colapsado = (1 - aptos / n0) >= cfg.moral_colapso_umbral
+        else:
+            colapsado = np.zeros((B, 2), bool)
+        derrotado = (vivos == 0) | colapsado
+        fin = ~self.terminada & (derrotado.any(-1) | (self.t >= cfg.max_ticks))
+        g = np.where(derrotado[:, 1] & ~derrotado[:, 0], 0, np.where(derrotado[:, 0] & ~derrotado[:, 1], 1, -1))
         self.ganador = np.where(fin, g, self.ganador)
         self.duracion = np.where(fin, self.t, self.duracion)
         self.terminada |= fin
