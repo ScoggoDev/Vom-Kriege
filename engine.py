@@ -3,8 +3,8 @@ Motor vectorizado de batallas napoleónicas de línea.
 Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
 del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
 río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
-(Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa).
-Sin movimiento lateral, sin cansancio, sin humo.
+(Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa),
+cansancio (Config.cansancio_activo). Sin movimiento lateral, sin humo.
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -80,6 +80,14 @@ class Config:
     # --- municion limitada (fase 4a) ---
     municion_activa: bool = False              # inventado: flag maestro
     municion_inicial: int = 60                 # cifra comun citada para la dotacion de un soldado de la epoca, sin verificar con fuente primaria
+    # --- cansancio (fase 4b) ---
+    cansancio_activo: bool = False             # inventado: flag maestro
+    cansancio_por_marcha: float = 0.01         # inventado: sube por tick marchando (AVANZAR); ver informe de fase 4b sobre por que no 0.02
+    cansancio_por_disparo: float = 0.01        # inventado: sube por tick que dispara
+    cansancio_recuperacion: float = 0.03       # inventado: baja por tick en reposo (sin marchar ni disparar)
+    cansancio_penal_punteria: float = 0.4      # inventado: la punteria se multiplica por (1 - esto * cansancio)
+    cansancio_penal_recarga: float = 3.0       # inventado: ticks extra de recarga = esto * cansancio
+    cansancio_penal_moral: float = 0.25        # inventado: se suma a la fraccion de bajas percibida, proporcional al cansancio
 
 
 class Batalla:
@@ -124,6 +132,7 @@ class Batalla:
             self.municion = np.full((B, 2, N), cfg.municion_inicial, np.int32)
         else:
             self.municion = None
+        self.cansancio = np.zeros((B, 2, N), np.float32)
         self.huyendo = np.zeros((B, 2, N), bool)
         self.huida_y = np.zeros((B, 2, N), np.float32)
         if cfg.moral_activa:
@@ -264,6 +273,8 @@ class Batalla:
             self.municion -= dispara
         p = self.punteria * np.where(herido, cfg.penal_herido_punteria, 1.0) * cfg.p_max / (1 + (d_blanco / cfg.d50_m) ** 2)
         p = p * bonus_punteria * mult_cobertura
+        if cfg.cansancio_activo:
+            p = p * np.clip(1 - cfg.cansancio_penal_punteria * self.cansancio, 0.1, 1.0)
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
         impacto = dispara & blanco_vivo & (self.rng.random((B, 2, N)) < p)
         grave = self.rng.random((B, 2, N)) < cfg.p_herida_grave
@@ -287,6 +298,8 @@ class Batalla:
                 cruzando_s = np.take_along_axis(self.en_franja_rio(self.y_unidad),
                                                  np.broadcast_to(self.unidad, (B, 2, N)), 2)
                 frac_perdida_s = np.where(cruzando_s, frac_perdida_s + cfg.rio_penalidad_moral, frac_perdida_s)
+            if cfg.cansancio_activo:
+                frac_perdida_s = frac_perdida_s + cfg.cansancio_penal_moral * self.cansancio
             vivo_actual = self.salud > 0
             nueva_huida = activa & vivo_actual & ~self.huyendo & (frac_perdida_s > self.umbral_huida)
             self.huyendo |= nueva_huida
@@ -295,6 +308,8 @@ class Batalla:
 
         # Recarga
         extra = (self.rng.random((B, 2, N)) < 0.5) + herido * cfg.penal_herido_recarga
+        if cfg.cansancio_activo:
+            extra = extra + (cfg.cansancio_penal_recarga * self.cansancio).astype(int)
         self.recarga = np.where(dispara, cfg.recarga_ticks + extra, np.maximum(self.recarga - 1, 0)).astype(np.int16)
 
         # Movimiento de unidades que avanzan (y que conservan alguien vivo)
@@ -324,6 +339,14 @@ class Batalla:
             factor_clima = 1.0
         mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
         self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano * factor_clima
+
+        # Cansancio (fase 4b): sube al marchar o disparar, baja en reposo.
+        if cfg.cansancio_activo:
+            marchando_s = np.take_along_axis(mueve, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+            sube = marchando_s * cfg.cansancio_por_marcha + dispara * cfg.cansancio_por_disparo
+            self.cansancio = np.clip(
+                np.where(sube > 0, self.cansancio + sube, self.cansancio - cfg.cansancio_recuperacion), 0.0, 1.0
+            ).astype(np.float32)
 
         if self.grabar:
             self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
