@@ -28,6 +28,7 @@ class Config:
     marcha_m_tick: float = 4.5       # ~0,9 m/s, paso ordinario
     recarga_ticks: int = 4           # ~20-25 s por disparo
     modo_fuego: str = "area"         # "area": al bulto de la formación; "apuntado": a un enemigo vivo
+    cierra_filas: bool = False       # inventado (fase 6, pregunta de investigacion 6): en modo "area", cierra los huecos de los caidos
     p_max: float = 0.5               # prob. de impacto a quemarropa con puntería 1
     d50_m: float = 30.0              # a esta distancia la prob. cae a la mitad
     alcance_max_m: float = 150.0
@@ -43,6 +44,7 @@ class Config:
     moral_umbral_sd: float = 0.2               # inventado: heterogeneidad del umbral (Granovetter 1978), sin calibrar
     moral_velocidad_huida_m_tick: float = 6.0  # inventado: mas rapido que la marcha ordinaria (4.5), sin calibrar
     moral_colapso_umbral: float = 0.15         # inventado: calibrado contra CDB90, ver informe de fase 1
+    moral_umbral_media_por_bando: tuple = None # inventado (fase 6, pregunta 5): si no es None, anula moral_umbral_media por separado para cada bando
     # --- terreno: elevacion y cobertura (fase 2a) ---
     terreno_activo: bool = False                    # inventado: flag maestro
     terreno_cresta_y_m: float = 125.0               # inventado: centro de la cresta (mitad del mapa por defecto)
@@ -142,9 +144,18 @@ class Batalla:
         self.huyendo = np.zeros((B, 2, N), bool)
         self.huida_y = np.zeros((B, 2, N), np.float32)
         if cfg.moral_activa:
-            self.umbral_huida = np.clip(
-                self.rng.normal(cfg.moral_umbral_media, cfg.moral_umbral_sd, (B, 2, N)), 0.05, 0.95
-            ).astype(np.float32)
+            if cfg.moral_umbral_media_por_bando is None:
+                self.umbral_huida = np.clip(
+                    self.rng.normal(cfg.moral_umbral_media, cfg.moral_umbral_sd, (B, 2, N)), 0.05, 0.95
+                ).astype(np.float32)
+            else:
+                # fase 6, pregunta 5: moral distinta por bando. Dos sorteos de (B,N),
+                # no el mismo camino que el caso de arriba (no es bit a bit igual
+                # aunque las dos medias sean iguales), por eso solo se usa si se pide.
+                medias = cfg.moral_umbral_media_por_bando
+                u0 = self.rng.normal(medias[0], cfg.moral_umbral_sd, (B, N))
+                u1 = self.rng.normal(medias[1], cfg.moral_umbral_sd, (B, N))
+                self.umbral_huida = np.clip(np.stack([u0, u1], axis=1), 0.05, 0.95).astype(np.float32)
         else:
             self.umbral_huida = None  # no se sortea: con el flag apagado, ni se usa ni se consume el rng
         self.t = 0
@@ -237,8 +248,11 @@ class Batalla:
         tiene_s = np.take_along_axis(tiene, np.broadcast_to(self.unidad, (B, 2, N)), 2)
         ini_e = np.take_along_axis(np.broadcast_to(self.ini_u[[1, 0]], (B, 2, U)), tu, 2)
         r = self.rng.random((B, 2, N))
-        if cfg.modo_fuego == "apuntado":
-            # orden aleatorio con los vivos primero dentro de cada unidad enemiga
+        if cfg.modo_fuego == "apuntado" or cfg.cierra_filas:
+            # orden aleatorio con los vivos primero dentro de cada unidad enemiga.
+            # cierra_filas (fase 6, pregunta 6) reusa esto para "area": si no quedan
+            # huecos en la formacion, un tiro al bulto siempre encuentra a alguien
+            # vivo, que es estructuralmente lo mismo que elegir entre los vivos.
             clave = self.unidad[None] * 4 + (~vivo) * 2 + self.rng.random((B, 2, N))
             orden = np.argsort(clave, -1)[:, [1, 0]]
             n_e = np.take_along_axis(vivos_u[:, [1, 0]], tu, 2)
