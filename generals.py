@@ -1,6 +1,6 @@
 """Generales de reglas. Devuelven una orden por unidad: array (B, U)."""
 import numpy as np
-from engine import SOSTENER, AVANZAR, IZQUIERDA, DERECHA
+from engine import SOSTENER, AVANZAR, IZQUIERDA, DERECHA, COLUMNA, FORMAR_COLUMNA, FORMAR_LINEA
 
 
 def quieto(bat, lado):
@@ -39,4 +39,31 @@ def cruzar_rio_y_disparar(distancia_m=70.0, margen_alineacion_m=2.0):
         d = bat.distancia_unidades_al_enemigo()[:, lado]
         base = np.where(d > distancia_m, AVANZAR, SOSTENER)
         return np.where(mover_der, DERECHA, np.where(mover_izq, IZQUIERDA, base))
+    return general
+
+
+def columna_y_despliega(distancia_despliegue_m=100.0, distancia_combate_m=70.0):
+    """Marcha en columna (mas rapido) mientras el enemigo esta lejos, se despliega
+    en linea a distancia_despliegue_m, y de ahi en mas es igual a avanzar_y_disparar.
+    Doctrina historica estandar: columna para marchar, linea para tirotear."""
+    def general(bat, lado):
+        d = bat.distancia_unidades_al_enemigo()[:, lado]
+        en_columna = bat.formacion[:, lado] == COLUMNA
+        quiere_columna = d > distancia_despliegue_m
+        cambia_a_columna = quiere_columna & ~en_columna
+        cambia_a_linea = ~quiere_columna & en_columna
+        avanzar_o_sostener = np.where(d > distancia_combate_m, AVANZAR, SOSTENER)
+        return np.where(cambia_a_columna, FORMAR_COLUMNA,
+                         np.where(cambia_a_linea, FORMAR_LINEA, avanzar_o_sostener))
+    return general
+
+
+def siempre_columna_y_dispara(distancia_m=70.0):
+    """Doctrina deliberadamente mala, para comparar: se pone en columna al
+    arrancar y nunca se despliega en linea, ni para tirotear."""
+    def general(bat, lado):
+        en_columna = bat.formacion[:, lado] == COLUMNA
+        d = bat.distancia_unidades_al_enemigo()[:, lado]
+        avanzar_o_sostener = np.where(d > distancia_m, AVANZAR, SOSTENER)
+        return np.where(~en_columna, FORMAR_COLUMNA, avanzar_o_sostener)
     return general

@@ -6,7 +6,9 @@ río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
 (Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa),
 cansancio (Config.cansancio_activo), humo (Config.humo_activo), movimiento lateral
 (órdenes IZQUIERDA/DERECHA), terreno clave para desempate por tiempo
-(Config.terreno_clave_activo).
+(Config.terreno_clave_activo), formaciones línea/columna (Config.formaciones_activo,
+sin cuadro: no hay caballería que lo justifique) y mélé a la bayoneta
+(Config.mele_activo, orden CARGAR).
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -16,9 +18,17 @@ from dataclasses import dataclass
 import numpy as np
 
 # Órdenes que el general da a cada unidad
-SOSTENER, AVANZAR, IZQUIERDA, DERECHA = 0, 1, 2, 3   # sostener = quedarse y hacer fuego a discreción
+SOSTENER, AVANZAR, IZQUIERDA, DERECHA, FORMAR_LINEA, FORMAR_COLUMNA, CARGAR = range(7)
+# sostener = quedarse y hacer fuego a discreción.
 # IZQUIERDA/DERECHA: movimiento lateral (perpendicular al eje de avance). Como AVANZAR,
 # mientras se mueve la unidad no dispara (listo exige orden_s == SOSTENER).
+# FORMAR_LINEA/FORMAR_COLUMNA: cambia la formacion (persiste hasta la proxima orden de
+# cambio). La unidad no dispara ni se mueve el tick que cambia de formacion.
+# CARGAR: avanza como AVANZAR hasta quedar a mele_distancia_m del enemigo; una vez en
+# contacto, no dispara, pelea cuerpo a cuerpo (Config.mele_activo).
+
+# Formaciones (Config.formaciones_activo)
+LINEA, COLUMNA = 0, 1
 
 
 @dataclass
@@ -105,6 +115,17 @@ class Config:
     terreno_clave_y_centro_m: float = 125.0     # inventado: mitad del mapa por defecto
     terreno_clave_x_ancho_m: float = 40.0       # inventado
     terreno_clave_y_ancho_m: float = 40.0       # inventado
+    # --- formaciones: linea y columna (sin cuadro: no hay caballeria que justifique su uso) ---
+    formaciones_activo: bool = False              # inventado: flag maestro
+    columna_factor_marcha: float = 1.3            # inventado: la columna marcha mas rapido que la linea
+    columna_factor_disparo: float = 0.3           # inventado: en columna solo el frente puede disparar de lleno
+    columna_factor_recibido: float = 1.4          # inventado: en columna, mas densa, mas facil de alcanzar
+    # --- mele (carga a la bayoneta) ---
+    mele_activo: bool = False                     # inventado: flag maestro
+    mele_distancia_m: float = 5.0                 # inventado: distancia de contacto cuerpo a cuerpo
+    mele_choque_moral: float = 0.5                # inventado: se suma a la fraccion de bajas percibida de ambos lados en contacto (solo si moral_activa)
+    mele_p_baja: float = 0.1                      # inventado: prob. de baja por soldado en contacto, por tick, para cada lado
+    mele_bonus_columna: float = 1.5               # inventado: la columna pega mas fuerte en el choque (impetu de la carga)
 
 
 class Batalla:
@@ -152,6 +173,7 @@ class Batalla:
             self.municion = None
         self.cansancio = np.zeros((B, 2, N), np.float32)
         self.humo_unidad = np.zeros((B, 2, U), np.float32)
+        self.formacion = np.full((B, 2, U), LINEA, np.int8)  # siempre existe; sin el flag, nunca cambia de LINEA
         self.huyendo = np.zeros((B, 2, N), bool)
         self.huida_y = np.zeros((B, 2, N), np.float32)
         if cfg.moral_activa:
@@ -249,6 +271,12 @@ class Batalla:
         herido = self.salud == 1
         orden_s = np.take_along_axis(ordenes, np.broadcast_to(self.unidad, (B, 2, N)), 2)
 
+        # Formaciones: cambia de inmediato (simplificacion), la unidad no dispara ni se
+        # mueve el tick que cambia (orden_s no es SOSTENER ni AVANZAR ese tick).
+        if cfg.formaciones_activo:
+            self.formacion = np.where(ordenes == FORMAR_COLUMNA, COLUMNA,
+                                       np.where(ordenes == FORMAR_LINEA, LINEA, self.formacion)).astype(np.int8)
+
         # Fuego simultáneo: todos disparan con el estado del inicio del tick.
         # Cada unidad le tira a la unidad enemiga viva más cercana; cada soldado elige blanco dentro de ella.
         x, y = self.posiciones()
@@ -264,6 +292,25 @@ class Batalla:
         tiene_s = np.take_along_axis(tiene, np.broadcast_to(self.unidad, (B, 2, N)), 2)
         ini_e = np.take_along_axis(np.broadcast_to(self.ini_u[[1, 0]], (B, 2, U)), tu, 2)
         r = self.rng.random((B, 2, N))
+
+        # Mele (carga a la bayoneta): en contacto si la unidad enemiga mas cercana esta a
+        # mele_distancia_m o menos, y hay carga de alguno de los dos lados. Se usa la misma
+        # pareja "unidad propia - unidad enemiga mas cercana" que ya calcula el fuego a
+        # distancia (simplificacion: si hay varias unidades enemigas cerca, cada una pelea
+        # contra la que ella misma ve como mas cercana, no necesariamente simetrico).
+        if cfg.mele_activo:
+            dist_u = du.min(-1)  # (B,2,U)
+            en_contacto_u = dist_u <= cfg.mele_distancia_m
+            cargando_u = (ordenes == CARGAR) & (vivos_u > 0)
+            cargando_enemigo_u = np.take_along_axis(cargando_u[:, [1, 0]], u_blanco, 2)
+            en_mele_u = en_contacto_u & (cargando_u | cargando_enemigo_u)
+            en_mele_s = (np.take_along_axis(en_mele_u, np.broadcast_to(self.unidad, (B, 2, N)), 2) &
+                         vivo & ~self.huyendo & activa)
+            cargando_propio_s = np.take_along_axis(cargando_u, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+        else:
+            en_contacto_u = np.zeros((B, 2, U), bool)
+            en_mele_s = np.zeros((B, 2, N), bool)
+            cargando_propio_s = np.zeros((B, 2, N), bool)
         if cfg.modo_fuego == "apuntado" or cfg.cierra_filas:
             # orden aleatorio con los vivos primero dentro de cada unidad enemiga.
             # cierra_filas (fase 6, pregunta 6) reusa esto para "area": si no quedan
@@ -310,7 +357,7 @@ class Batalla:
         else:
             fallo_clima = np.zeros_like(d_blanco, dtype=bool)
 
-        listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER)
+        listo = activa & vivo & ~self.huyendo & (self.recarga == 0) & (orden_s == SOSTENER) & ~en_mele_s
         if cfg.municion_activa:
             listo = listo & (self.municion > 0)
         dispara = listo & tiene_s & (d_blanco <= alcance_efectivo) & ~bloqueada & ~fallo_clima
@@ -325,6 +372,13 @@ class Batalla:
             humo_propio_s = np.take_along_axis(self.humo_unidad, np.broadcast_to(self.unidad, (B, 2, N)), 2)
             humo_blanco_s = np.take_along_axis(self.humo_unidad[:, [1, 0]], tu, 2)
             p = p / (1 + cfg.humo_penal_punteria * (humo_propio_s + humo_blanco_s))
+        if cfg.formaciones_activo:
+            en_columna_propia_s = np.take_along_axis(self.formacion, np.broadcast_to(self.unidad, (B, 2, N)), 2) == COLUMNA
+            en_columna_blanco_s = np.take_along_axis(self.formacion[:, [1, 0]], tu, 2) == COLUMNA
+            p = p * np.where(en_columna_propia_s, cfg.columna_factor_disparo, 1.0)
+            p = p * np.where(en_columna_blanco_s, cfg.columna_factor_recibido, 1.0)
+        else:
+            en_columna_blanco_s = np.zeros((B, 2, N), bool)
         blanco_vivo = np.take_along_axis(vivo[:, [1, 0]], blanco, 2)
         impacto = dispara & blanco_vivo & (self.rng.random((B, 2, N)) < p)
         grave = self.rng.random((B, 2, N)) < cfg.p_herida_grave
@@ -332,6 +386,22 @@ class Batalla:
         idx = (np.arange(B)[:, None, None] * 2 + np.array([1, 0])[None, :, None]) * N + blanco
         dano = np.bincount(idx[impacto], weights=dano_hecho[impacto], minlength=B * 2 * N).reshape(B, 2, N)
         self.salud = np.clip(self.salud - dano, 0, 2).astype(np.int8)
+
+        # Mele: usa el mismo blanco (dentro de la unidad enemiga mas cercana) que el
+        # fuego a distancia, pero con su propia probabilidad, despues de aplicar el
+        # dano a distancia (no se puede acuchillar a quien ya murio de un balazo este tick).
+        if cfg.mele_activo:
+            p_mele = np.full((B, 2, N), cfg.mele_p_baja, np.float32)
+            if cfg.formaciones_activo:
+                p_mele = p_mele * np.where(cargando_propio_s & en_columna_propia_s, cfg.mele_bonus_columna, 1.0)
+                p_mele = p_mele * np.where(en_columna_blanco_s, cfg.columna_factor_recibido, 1.0)
+            blanco_vivo_mele = np.take_along_axis(self.salud[:, [1, 0]] > 0, blanco, 2)
+            impacto_mele = en_mele_s & blanco_vivo_mele & (self.rng.random((B, 2, N)) < p_mele)
+            grave_mele = self.rng.random((B, 2, N)) < cfg.p_herida_grave
+            dano_mele_hecho = np.where(grave_mele, 2, 1)
+            dano_mele = np.bincount(idx[impacto_mele], weights=dano_mele_hecho[impacto_mele],
+                                     minlength=B * 2 * N).reshape(B, 2, N)
+            self.salud = np.clip(self.salud - dano_mele, 0, 2).astype(np.int8)
 
         if cfg.humo_activo:
             disparos_u = self.vivos_por_unidad(dispara)
@@ -361,6 +431,11 @@ class Batalla:
                 frac_perdida_s = np.where(cruzando_s, frac_perdida_s + cfg.rio_penalidad_moral, frac_perdida_s)
             if cfg.cansancio_activo:
                 frac_perdida_s = frac_perdida_s + cfg.cansancio_penal_moral * self.cansancio
+            if cfg.mele_activo:
+                # docs/diseno.md: "una carga es, en el fondo, una prueba de moral". El
+                # choque cuerpo a cuerpo asusta a los dos lados en contacto, no solo al
+                # que recibe la carga.
+                frac_perdida_s = np.where(en_mele_s, frac_perdida_s + cfg.mele_choque_moral, frac_perdida_s)
             vivo_actual = self.salud > 0
             nueva_huida = activa & vivo_actual & ~self.huyendo & (frac_perdida_s > self.umbral_huida)
             self.huyendo |= nueva_huida
@@ -398,8 +473,16 @@ class Batalla:
             factor_clima = cfg.clima_nieve_factor_marcha
         else:
             factor_clima = 1.0
-        mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
-        self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano * factor_clima
+        if cfg.formaciones_activo:
+            factor_formacion = np.where(self.formacion == COLUMNA, cfg.columna_factor_marcha, 1.0)
+        else:
+            factor_formacion = 1.0
+        # CARGAR avanza como AVANZAR mientras no haya contacto; al contacto, mele
+        # resuelve en vez de movimiento (en_contacto_u ya excluye el avance).
+        cargar_avanza_u = (ordenes == CARGAR) & ~en_contacto_u if cfg.mele_activo else np.zeros((B, 2, U), bool)
+        mueve = ((ordenes == AVANZAR) | cargar_avanza_u) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
+        self.y_unidad += (mueve * self.dir[None, :, None] * cfg.marcha_m_tick *
+                           factor_pendiente * factor_pantano * factor_clima * factor_formacion)
 
         # Movimiento lateral: no lo frena la pendiente (la cresta es un perfil en y
         # nomas) ni el bloqueo del rio (maniobrar a lo largo de la orilla para

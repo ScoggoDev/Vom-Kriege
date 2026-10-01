@@ -77,9 +77,14 @@ regresión real de Helmbold/Hartley para responder esto en serio.
 
 ## Pregunta 3: línea contra columna
 
-**No respondible con el motor actual.** No existe la formación de columna (ni
-ninguna formación más que la línea); construirla es trabajo pendiente de la
-sección "Formaciones y melé" de `docs/diseno.md`, sin fase asignada todavía.
+**Actualización**: ya respondida en `docs/informe_formaciones_mele.md`, después
+de construir formaciones (sin fase asignada en su momento, ahora resuelto).
+Resumen: pelear en columna todo el combate es claramente peor que en línea
+(control que confirma que la mecánica funciona), pero marchar en columna y
+desplegarse en línea antes de tirotear (la doctrina histórica) no superó a
+marchar directamente en línea en este motor, porque no hay artillería que
+castigue específicamente a una columna expuesta a distancia, que es la razón
+histórica real para desplegarse antes de llegar al contacto.
 
 ## Pregunta 4: ¿aguantar el fuego o disparar temprano?
 
@@ -167,7 +172,7 @@ maniobrando por acotar el alcance de esta fase.
 |---|---|---|
 | 1. Ley combinada | sí | ninguna ley clásica ajusta; moral rompe el marco de atrición |
 | 2. Ley en CDB90 | parcial | exponentes bajos ajustan mejor que n=2, sin precisión (método propio insuficiente) |
-| 3. Línea vs columna | no | falta implementar formaciones |
+| 3. Línea vs columna | sí (actualizado) | pelear en columna es claramente peor; marchar en columna y desplegar no superó a marchar en línea, sin artillería que lo justifique |
 | 4. Disciplina de fuego | sí (fase 4c) | no ayuda contra un defensor estático en este motor |
 | 5. Chico con moral vs grande | sí | punto de quiebre ~74-75% del tamaño del rival |
 | 6. Cerrar filas | sí | confirma la ley cuadrada, por construcción y empíricamente |
