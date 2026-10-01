@@ -10,7 +10,7 @@ from engine import AVANZAR, Batalla, Config, SOSTENER
 from generals import avanzar_y_disparar, quieto
 from aprendizaje.observacion import N_FEATURES, observar
 from aprendizaje.politica import PoliticaMLP, general_aprendido
-from aprendizaje.es import entrenar, fitness
+from aprendizaje.es import entrenar, entrenar_self_play, fitness
 
 
 def test_observacion_forma_y_finitud():
@@ -64,4 +64,16 @@ def test_entrenar_corre_sin_crashear():
     assert isinstance(politica, PoliticaMLP)
     general = general_aprendido(politica)
     b = Batalla(cfg, B=4, seed=1).correr(general, quieto)
+    assert b.terminada.all()
+
+
+def test_entrenar_self_play_corre_sin_crashear():
+    cfg = Config(max_ticks=40, moral_activa=True, moral_umbral_media=0.4, moral_colapso_umbral=0.15)
+    politicas = entrenar_self_play(cfg, rondas=2, generaciones_por_ronda=2, poblacion=2, B=4, n_ocultas=6, semilla=0)
+    assert len(politicas) == 2
+    assert all(isinstance(p, PoliticaMLP) for p in politicas)
+    # la politica final tiene que poder jugar contra la de la ronda anterior sin crashear
+    general_final = general_aprendido(politicas[-1])
+    general_anterior = general_aprendido(politicas[0])
+    b = Batalla(cfg, B=4, seed=2).correr(general_final, general_anterior)
     assert b.terminada.all()

@@ -60,16 +60,19 @@ def fitness(cfg, politica, oponente, lado_entrenado, B, seed):
 
 
 def entrenar(cfg, generaciones=30, poblacion=12, sigma=0.1, lr=0.05, B=24,
-             n_ocultas=16, semilla=0, callback=None):
+             n_ocultas=16, semilla=0, callback=None, pool_oponentes=None, politica_inicial=None):
     """Devuelve la PoliticaMLP entrenada. `callback(gen, fitness_medio)` opcional
-    para loguear progreso."""
+    para loguear progreso. `pool_oponentes` reemplaza el pool de reglas por
+    defecto (usado para self-play, ver entrenar_self_play). `politica_inicial`
+    permite arrancar desde una politica ya entrenada en vez de pesos al azar."""
     rng = np.random.default_rng(semilla)
-    politica = PoliticaMLP(n_ocultas=n_ocultas, semilla=semilla)
+    pool = pool_oponentes if pool_oponentes is not None else POOL_OPONENTES
+    politica = politica_inicial if politica_inicial is not None else PoliticaMLP(n_ocultas=n_ocultas, semilla=semilla)
     theta = politica.parametros()
     n_params = politica.n_parametros
 
     for gen in range(generaciones):
-        oponente = POOL_OPONENTES[gen % len(POOL_OPONENTES)]
+        oponente = pool[gen % len(pool)]
         ruido = rng.normal(size=(poblacion, n_params)).astype(np.float32)
         fit_pos = np.zeros(poblacion)
         fit_neg = np.zeros(poblacion)
@@ -90,3 +93,37 @@ def entrenar(cfg, generaciones=30, poblacion=12, sigma=0.1, lr=0.05, B=24,
 
     politica.cargar_parametros(theta)
     return politica
+
+
+def entrenar_self_play(cfg, rondas=3, generaciones_por_ronda=20, incluir_pool_reglas=True,
+                        poblacion=12, sigma=0.1, lr=0.05, B=24, n_ocultas=16, semilla=0, callback=None):
+    """Entrena por rondas: la politica de la ronda anterior (congelada) se suma
+    como rival al pool de la ronda siguiente, ademas del pool de reglas si
+    incluir_pool_reglas (para no perder del todo la diversidad de rivales, ver
+    docs/diseno.md seccion 4 sobre el riesgo de ciclar contra un solo rival).
+
+    Es fictitious play (cada ronda juega contra una version congelada anterior,
+    no contra una que tambien aprende en simultaneo), no self-play simultaneo
+    de verdad. Mas simple de implementar sobre la infraestructura de ES ya
+    existente, que evalua una politica a la vez contra un oponente fijo.
+
+    Devuelve la lista de politicas, una por ronda (la ultima es la final)."""
+    politicas = []
+    pool = list(POOL_OPONENTES) if incluir_pool_reglas else []
+    politica_actual = None
+    for ronda in range(rondas):
+        def callback_ronda(gen, f, _ronda=ronda):
+            if callback is not None:
+                callback(_ronda, gen, f)
+        politica_actual = entrenar(
+            cfg, generaciones=generaciones_por_ronda, poblacion=poblacion, sigma=sigma, lr=lr, B=B,
+            n_ocultas=n_ocultas, semilla=semilla + ronda, callback=callback_ronda,
+            pool_oponentes=pool if pool else None, politica_inicial=politica_actual,
+        )
+        politicas.append(politica_actual)
+        # Congelar una copia independiente para el pool de la proxima ronda (si se
+        # siguiera entrenando politica_actual, el rival "congelado" cambiaria solo).
+        congelada = PoliticaMLP(n_ocultas=n_ocultas)
+        congelada.cargar_parametros(politica_actual.parametros().copy())
+        pool = (list(POOL_OPONENTES) if incluir_pool_reglas else []) + [general_aprendido(congelada)]
+    return politicas
