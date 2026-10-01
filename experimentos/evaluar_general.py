@@ -28,7 +28,9 @@ politica.cargar_parametros(datos["theta"])
 general_entrenado = general_aprendido(politica)
 general_referencia = avanzar_y_disparar(70.0)
 
-cfg = Config(moral_activa=True, moral_umbral_media=0.4, moral_colapso_umbral=0.15)
+cfg = Config(moral_activa=True, moral_umbral_media=0.4, moral_colapso_umbral=0.15,
+             terreno_clave_activo=True, terreno_clave_x_centro_m=0.0, terreno_clave_y_centro_m=125.0,
+             terreno_clave_x_ancho_m=40.0, terreno_clave_y_ancho_m=40.0)
 OPONENTES = {"quieto": quieto, "avanzar_40": avanzar_y_disparar(40.0),
              "avanzar_70": avanzar_y_disparar(70.0), "avanzar_100": avanzar_y_disparar(100.0)}
 SEMILLAS = (0, 1, 2, 3, 4)
@@ -50,13 +52,15 @@ def evaluar(general_propio, nombre_oponente, general_oponente):
     bo = np.concatenate(bajas_oponente)
     n = len(g)
     tasa = (g == 0).mean()
-    return tasa, np.sqrt(tasa * (1 - tasa) / n), bp.mean() * 100, bo.mean() * 100
+    empate = (g == -1).mean()
+    return tasa, np.sqrt(tasa * (1 - tasa) / n), empate, bp.mean() * 100, bo.mean() * 100
 
 
 print(f"{'oponente':<12} | {'gana entrenado':<18} | {'gana referencia (dist=70)':<26}")
 for nombre, oponente in OPONENTES.items():
-    tasa_e, sem_e, bp_e, bo_e = evaluar(general_entrenado, nombre, oponente)
-    tasa_r, sem_r, bp_r, bo_r = evaluar(general_referencia, nombre, oponente)
-    print(f"{nombre:<12} | {tasa_e:5.1%} +- {sem_e:4.1%}      | {tasa_r:5.1%} +- {sem_r:4.1%}")
+    tasa_e, sem_e, emp_e, bp_e, bo_e = evaluar(general_entrenado, nombre, oponente)
+    tasa_r, sem_r, emp_r, bp_r, bo_r = evaluar(general_referencia, nombre, oponente)
+    print(f"{nombre:<12} | {tasa_e:5.1%} +- {sem_e:4.1%} (emp {emp_e:4.1%}) | "
+          f"{tasa_r:5.1%} +- {sem_r:4.1%} (emp {emp_r:4.1%})")
     print(f"             | bajas propias {bp_e:4.1f}%, rival {bo_e:4.1f}% | "
           f"bajas propias {bp_r:4.1f}%, rival {bo_r:4.1f}%")

@@ -11,10 +11,16 @@ Reduccion de alcance deliberada respecto de docs/diseno.md seccion 4:
   (ver seccion "Formaciones y mele" de docs/diseno.md, sin fase asignada). El
   general que aprende elige entre las mismas dos ordenes que ya usan los
   generales de reglas, AVANZAR o SOSTENER, una por unidad.
+
+Las ultimas dos features (distancia a la zona clave y si la unidad esta
+adentro) se agregaron junto con terreno_clave_activo, para que el general
+pueda aprender a disputar el terreno en vez de evitar el combate por completo
+(ver el hallazgo de docs/informe_fase5_general.md: sin esto, entrenar contra un
+rival quieto producia una politica que nunca avanzaba).
 """
 import numpy as np
 
-N_FEATURES = 9
+N_FEATURES = 11
 
 
 def observar(bat, lado):
@@ -55,12 +61,24 @@ def observar(bat, lado):
 
     if cfg.terreno_activo:
         altura_u = bat.altura(bat.y_unidad[:, lado]) / max(cfg.terreno_cresta_alto_m, 1e-6)
-        en_cobertura_u = bat.en_cobertura(bat.x_unidad[lado][None, :], bat.y_unidad[:, lado]).astype(np.float32)
+        en_cobertura_u = bat.en_cobertura(bat.x_unidad[:, lado], bat.y_unidad[:, lado]).astype(np.float32)
     else:
         altura_u = np.zeros((B, U), np.float32)
         en_cobertura_u = np.zeros((B, U), np.float32)
 
     tick_norm = np.full((B, U), bat.t / max(cfg.max_ticks, 1), np.float32)
 
+    if cfg.terreno_clave_activo:
+        x_u = bat.x_unidad[:, lado]
+        y_u = bat.y_unidad[:, lado]
+        dx_clave = x_u - cfg.terreno_clave_x_centro_m
+        dy_clave = y_u - cfg.terreno_clave_y_centro_m
+        dist_clave_norm = np.clip(np.hypot(dx_clave, dy_clave) / max(cfg.distancia_inicial_m, 1.0), 0, 3)
+        en_zona_clave_u = bat.en_zona_clave(x_u, y_u).astype(np.float32)
+    else:
+        dist_clave_norm = np.zeros((B, U), np.float32)
+        en_zona_clave_u = np.zeros((B, U), np.float32)
+
     return np.stack([dist_norm, fuerza_u, ventaja_numerica, moral_u, municion_u,
-                      cansancio_u, altura_u, en_cobertura_u, tick_norm], axis=-1).astype(np.float32)
+                      cansancio_u, altura_u, en_cobertura_u, tick_norm,
+                      dist_clave_norm, en_zona_clave_u], axis=-1).astype(np.float32)

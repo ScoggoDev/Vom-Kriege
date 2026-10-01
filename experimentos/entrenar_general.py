@@ -19,7 +19,9 @@ generaciones = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 poblacion = int(sys.argv[2]) if len(sys.argv) > 2 else 16
 B = int(sys.argv[3]) if len(sys.argv) > 3 else 32
 
-cfg = Config(moral_activa=True, moral_umbral_media=0.4, moral_colapso_umbral=0.15)
+cfg = Config(moral_activa=True, moral_umbral_media=0.4, moral_colapso_umbral=0.15,
+             terreno_clave_activo=True, terreno_clave_x_centro_m=0.0, terreno_clave_y_centro_m=125.0,
+             terreno_clave_x_ancho_m=40.0, terreno_clave_y_ancho_m=40.0)
 
 t0 = time.perf_counter()
 

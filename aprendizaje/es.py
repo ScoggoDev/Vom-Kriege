@@ -30,7 +30,15 @@ def fitness(cfg, politica, oponente, lado_entrenado, B, seed):
     """Promedio sobre B batallas de: diferencia de bajas (en fraccion) mas un
     bonus por resultado decisivo. Da señal de gradiente incluso cuando todavia
     no se gana ninguna batalla (algo que un fitness binario de solo ganar/perder
-    no daria al principio del entrenamiento)."""
+    no daria al principio del entrenamiento).
+
+    Si hay terreno clave, se suma un termino continuo de cercania a la zona al
+    terminar la batalla. Sin esto, con un rival que tampoco se mueve (quieto),
+    "nadie controla la zona" es un empate tan bueno como cualquier otro para el
+    fitness, y la politica aprende a no moverse nunca (hallazgo real de
+    docs/informe_fase5_general.md): agregar terreno_clave_activo sin este
+    termino no alcanza, porque el desempate de la batalla solo se nota si
+    alguien efectivamente entra en la zona."""
     generales = [None, None]
     generales[lado_entrenado] = general_aprendido(politica)
     generales[1 - lado_entrenado] = oponente
@@ -41,7 +49,14 @@ def fitness(cfg, politica, oponente, lado_entrenado, B, seed):
     propio, enemigo = lado_entrenado, 1 - lado_entrenado
     margen = pct[:, enemigo] - pct[:, propio]
     bonus = np.where(b.ganador == propio, 0.5, np.where(b.ganador == enemigo, -0.5, 0.0))
-    return float((margen + bonus).mean())
+    if cfg.terreno_clave_activo:
+        dx = b.x_unidad[:, propio] - cfg.terreno_clave_x_centro_m
+        dy = b.y_unidad[:, propio] - cfg.terreno_clave_y_centro_m
+        dist_zona = np.hypot(dx, dy).min(-1) / max(cfg.distancia_inicial_m, 1.0)
+        bonus_zona = -1.5 * np.clip(dist_zona, 0, 1)
+    else:
+        bonus_zona = 0.0
+    return float((margen + bonus + bonus_zona).mean())
 
 
 def entrenar(cfg, generaciones=30, poblacion=12, sigma=0.1, lr=0.05, B=24,

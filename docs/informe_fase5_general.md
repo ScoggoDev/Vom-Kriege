@@ -8,10 +8,12 @@ Documentada también en los docstrings de `aprendizaje/`:
   perfil paramétrico de una sola cresta, no una grilla cargable ni aleatoria).
   La política usa una red de una sola capa oculta (16 neuronas, tanh) sobre 9
   features escalares por unidad, no una convolucional.
-- **Sin cargar, retirarse ni cambiar formación**: esas mecánicas no existen
-  (no hay melé ni más de una formación). El general aprendido elige entre las
-  mismas dos órdenes que ya usan los generales de reglas: `AVANZAR` o
-  `SOSTENER`, una por unidad.
+- **Sin cargar, retirarse ni cambiar formación**: el motor ya tiene estas
+  órdenes (movimiento lateral, formaciones línea/columna y mélé se agregaron
+  después de este entrenamiento, ver `docs/informe_movimiento_lateral.md` y
+  más abajo), pero el general aprendido todavía elige solo entre `AVANZAR` o
+  `SOSTENER`, una por unidad. Ampliar su espacio de acciones para que use las
+  órdenes nuevas queda pendiente, no se reentrenó con ellas en esta sesión.
 - **Observación** (`aprendizaje/observacion.py`): distancia al enemigo más
   cercano, fuerza propia, ventaja numérica, moral, munición, cansancio, altura,
   si está en cobertura, y tiempo transcurrido. Cada feature es neutral (1,0 o
@@ -93,6 +95,39 @@ literalmente lo que se premia (evitar bajas netas), no "ganar batallas" en un
 sentido más amplio. Si se quiere un general que efectivamente ataque, el fitness
 necesitaría premiar de forma más explícita el control de terreno o penalizar
 los empates, no solo la diferencia de bajas.
+
+## Intento de arreglo: terreno clave en la observación y el fitness
+
+Se agregó `terreno_clave_activo` (zona en el punto medio) al entrenamiento, con
+dos features nuevas en la observación (distancia a la zona, si la unidad está
+adentro) y un término continuo en el fitness que penaliza terminar lejos de la
+zona (`-0,2 * distancia_normalizada`, después subido a `-1,5` al ver que no
+alcanzaba). **No cambió nada**: contra `quieto` la política entrenada sigue sin
+emitir una sola orden de avanzar en 360 ticks, con exactamente el mismo
+resultado (0% victorias, 100% empates) en ambas corridas, y los resultados
+contra los otros tres oponentes salieron **bit a bit idénticos** a la corrida
+anterior pese a cambiar el fitness por un factor de 7,5.
+
+Eso último es sospechoso de por sí: no debería dar exactamente igual. Revisado
+el código, no se encontró un bug (el término se calcula y se suma antes de
+promediar), así que la explicación más probable es que, con semilla fija y la
+misma arquitectura, la señal de las otras tres batallas del pool domina el
+gradiente de ES antes de que el término de zona (una fracción chica del
+fitness total, aun con coeficiente alto) mueva la aguja en las 40 generaciones
+corridas. No se investigó más a fondo por acotar el alcance de esta sesión:
+haría falta un barrido de sigma/tasa de aprendizaje, más generaciones, o
+aislar el entrenamiento contra `quieto` solo (sin rotar oponentes) para
+confirmar si el término de zona realmente puede revertir este comportamiento
+con más cómputo, o si hace falta repensar el diseño del fitness por completo
+(por ejemplo, premiar el *acercamiento* a la zona tick a tick, no solo la
+posición final).
+
+**Conclusión honesta**: el problema que motivó agregar terreno clave
+(pasividad total sin costo) sigue sin resolverse en la práctica, aunque el
+mecanismo de terreno clave en sí funciona correctamente a nivel de motor (ver
+`tests/test_terreno_clave.py`) y es la pieza correcta para resolverlo en
+principio. Queda pendiente, no se fuerzo una conclusión positiva que los
+números no respaldan.
 
 ## Sabido vs. supuesto
 
