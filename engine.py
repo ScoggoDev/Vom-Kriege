@@ -325,7 +325,13 @@ class Batalla:
         # Moral: cascada de huida tipo Granovetter dentro de la propia unidad (ver docs/diseno.md).
         # Umbral heterogeneo por soldado, sorteado una vez al inicio. Huida irreversible en la batalla.
         if cfg.moral_activa:
-            perdido = (self.salud == 0) | self.huyendo
+            # OJO: self.existe es imprescindible aca. Las casillas de relleno (cuando
+            # un bando tiene menos soldados que max(n_soldados)) tienen salud=0 para
+            # siempre porque nunca existieron, no porque hayan caido. Sin el filtro,
+            # un bando mas chico arranca con una fraccion de "bajas" fantasma desde
+            # el primer tick y colapsa antes de tiempo (bug real, encontrado al armar
+            # experimentos/fase6_lanchester_combinado.py con n_soldados asimetrico).
+            perdido = ((self.salud == 0) & self.existe[None]) | self.huyendo
             perdidos_u = self.vivos_por_unidad(perdido)
             frac_perdida_u = perdidos_u / np.maximum(self.tam_u[None], 1)
             frac_perdida_s = np.take_along_axis(frac_perdida_u, np.broadcast_to(self.unidad, (B, 2, N)), 2)
