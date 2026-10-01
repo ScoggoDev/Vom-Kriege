@@ -159,6 +159,15 @@ class Batalla:
         idx = (np.arange(self.B)[:, None, None] * 2 + np.arange(2)[None, :, None]) * U + self.unidad[None]
         return np.bincount(idx[vivo], minlength=self.B * 2 * U).reshape(self.B, 2, U)
 
+    def suma_por_unidad(self, valores):
+        """Como vivos_por_unidad pero suma valores continuos en vez de contar un booleano
+        (por ejemplo, para promediar municion o cansancio por unidad). No reusa
+        vivos_por_unidad para no tocar ese camino ya verificado."""
+        U = self.cfg.unidades
+        idx = (np.arange(self.B)[:, None, None] * 2 + np.arange(2)[None, :, None]) * U + self.unidad[None]
+        idx = np.broadcast_to(idx, valores.shape)
+        return np.bincount(idx.ravel(), weights=valores.ravel(), minlength=self.B * 2 * U).reshape(self.B, 2, U)
+
     # --- terreno (fase 2a): perfil de elevacion en y, cobertura en una franja x,y ---
     def altura(self, y):
         """Perfil de elevacion: una sola cresta con forma de campana centrada en terreno_cresta_y_m.
