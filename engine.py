@@ -95,6 +95,12 @@ class Config:
     humo_por_disparo: float = 0.15         # inventado: cuanto humo agrega cada disparo a la nube de su unidad
     humo_disipacion: float = 0.15          # inventado: fraccion de la nube que se disipa por tick
     humo_penal_punteria: float = 0.4       # inventado: reduce la punteria segun el humo propio mas el del blanco
+    # --- terreno clave (desempate por tiempo, ver CLAUDE.md "si se acaba el tiempo, gana quien controle el terreno clave") ---
+    terreno_clave_activo: bool = False          # inventado: flag maestro
+    terreno_clave_x_centro_m: float = 0.0       # inventado
+    terreno_clave_y_centro_m: float = 125.0     # inventado: mitad del mapa por defecto
+    terreno_clave_x_ancho_m: float = 40.0       # inventado
+    terreno_clave_y_ancho_m: float = 40.0       # inventado
 
 
 class Batalla:
@@ -206,6 +212,11 @@ class Batalla:
         cfg = self.cfg
         return ((np.abs(y - cfg.pantano_y_centro_m) < cfg.pantano_y_ancho_m / 2) &
                 (np.abs(x - cfg.pantano_x_centro_m) < cfg.pantano_x_ancho_m / 2))
+
+    def en_zona_clave(self, x, y):
+        cfg = self.cfg
+        return ((np.abs(y - cfg.terreno_clave_y_centro_m) < cfg.terreno_clave_y_ancho_m / 2) &
+                (np.abs(x - cfg.terreno_clave_x_centro_m) < cfg.terreno_clave_x_ancho_m / 2))
 
     # --- geometría ---
     def posiciones(self):
@@ -407,8 +418,17 @@ class Batalla:
         else:
             colapsado = np.zeros((B, 2), bool)
         derrotado = (vivos == 0) | colapsado
-        fin = ~self.terminada & (derrotado.any(-1) | (self.t >= cfg.max_ticks))
+        fin_por_tiempo = ~self.terminada & ~derrotado.any(-1) & (self.t >= cfg.max_ticks)
+        fin = ~self.terminada & (derrotado.any(-1) | fin_por_tiempo)
         g = np.where(derrotado[:, 1] & ~derrotado[:, 0], 0, np.where(derrotado[:, 0] & ~derrotado[:, 1], 1, -1))
+        if cfg.terreno_clave_activo and fin_por_tiempo.any():
+            # Desempate por tiempo (CLAUDE.md: "si se acaba el tiempo, gana quien
+            # controle el terreno clave, para que la pasividad no convenga").
+            x_final, y_final = self.posiciones()
+            en_zona = self.en_zona_clave(x_final, y_final) & (self.salud > 0)
+            control = en_zona.sum(-1)  # (B,2)
+            g_tiempo = np.where(control[:, 0] > control[:, 1], 0, np.where(control[:, 1] > control[:, 0], 1, -1))
+            g = np.where(fin_por_tiempo, g_tiempo, g)
         self.ganador = np.where(fin, g, self.ganador)
         self.duracion = np.where(fin, self.t, self.duracion)
         self.terminada |= fin
