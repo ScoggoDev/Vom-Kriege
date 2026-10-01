@@ -80,7 +80,7 @@ function cargar(json) {
 }
 
 function posicion(s, frame) {
-  const xu = datos.meta.x_unidad[s.lado][s.unidad];
+  const xu = frame.x_unidad[s.lado][s.unidad];
   const yu = frame.y_unidad[s.lado][s.unidad];
   const dir = datos.meta.dir[s.lado];
   const huidaY = frame.huida_y ? frame.huida_y[s.lado][s.idx] : 0;

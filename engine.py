@@ -4,7 +4,9 @@ Capa 1: salud y puntería. Capa 2: moral y fin de batalla por colapso (detrás
 del flag Config.moral_activa). Capa 3: elevación y cobertura (Config.terreno_activo),
 río con vados y pantano (Config.rio_activo, Config.pantano_activo), clima
 (Config.clima: "seco"/"lluvia"/"nieve"), munición limitada (Config.municion_activa),
-cansancio (Config.cansancio_activo), humo (Config.humo_activo). Sin movimiento lateral.
+cansancio (Config.cansancio_activo), humo (Config.humo_activo), movimiento lateral
+(órdenes IZQUIERDA/DERECHA), terreno clave para desempate por tiempo
+(Config.terreno_clave_activo).
 
 Todos los arrays tienen forma (B, 2, N): batallas en paralelo, bando, soldado.
 La grilla es de 1 metro por celda. Un tick son 5 segundos.
@@ -14,7 +16,9 @@ from dataclasses import dataclass
 import numpy as np
 
 # Órdenes que el general da a cada unidad
-SOSTENER, AVANZAR = 0, 1   # sostener = quedarse y hacer fuego a discreción
+SOSTENER, AVANZAR, IZQUIERDA, DERECHA = 0, 1, 2, 3   # sostener = quedarse y hacer fuego a discreción
+# IZQUIERDA/DERECHA: movimiento lateral (perpendicular al eje de avance). Como AVANZAR,
+# mientras se mueve la unidad no dispara (listo exige orden_s == SOSTENER).
 
 
 @dataclass
@@ -117,7 +121,7 @@ class Batalla:
         self.unidad = np.zeros((2, N), int)
         self.dx = np.zeros((2, N), np.float32)
         self.fila = np.zeros((2, N), np.float32)
-        self.x_unidad = np.zeros((2, U), np.float32)
+        x_unidad_inicial = np.zeros((2, U), np.float32)
         self.ini_u = np.zeros((2, U), int)
         self.tam_u = np.zeros((2, U), int)
         for s in (0, 1):
@@ -125,7 +129,7 @@ class Batalla:
             por_u = -(-n // U)
             cols = -(-por_u // F)
             ancho = cols * cfg.frente_m
-            self.x_unidad[s] = (np.arange(U) - (U - 1) / 2) * (ancho + cfg.hueco_unidades_m)
+            x_unidad_inicial[s] = (np.arange(U) - (U - 1) / 2) * (ancho + cfg.hueco_unidades_m)
             i = np.arange(n)
             u, k = i // por_u, i % por_u
             self.existe[s, :n] = True
@@ -136,6 +140,7 @@ class Batalla:
             self.tam_u[s] = np.clip(n - np.arange(U) * por_u, 0, por_u)
 
         # Estado dinámico
+        self.x_unidad = np.broadcast_to(x_unidad_inicial, (B, 2, U)).copy()  # (B,2,U): movimiento lateral lo cambia
         self.y_unidad = np.zeros((B, 2, U), np.float32)
         self.y_unidad[:, 1] = cfg.distancia_inicial_m
         self.salud = np.where(self.existe, 2, 0)[None].repeat(B, 0).astype(np.int8)  # 2 sano, 1 herido, 0 fuera
@@ -220,8 +225,8 @@ class Batalla:
 
     # --- geometría ---
     def posiciones(self):
-        x = self.x_unidad[:, self.unidad][[0, 1], [0, 1]] + self.dx          # (2,N)
-        x = np.broadcast_to(x, (self.B, 2, self.N))
+        xu = np.take_along_axis(self.x_unidad, np.broadcast_to(self.unidad, (self.B, 2, self.N)), 2)
+        x = xu + self.dx[None]
         yu = np.take_along_axis(self.y_unidad, np.broadcast_to(self.unidad, (self.B, 2, self.N)), 2)
         y = yu - self.dir[None, :, None] * self.fila[None] + self.huida_y
         return x, y
@@ -230,7 +235,7 @@ class Batalla:
         """Distancia del frente de cada unidad al enemigo vivo más cercano: (B,2,U)."""
         x, y = self.posiciones()
         vivo = self.salud > 0
-        xu = np.broadcast_to(self.x_unidad, (self.B, 2, self.cfg.unidades))
+        xu = self.x_unidad
         xe, ye, ve = x[:, [1, 0]], y[:, [1, 0]], vivo[:, [1, 0]]
         d = np.hypot(xu[..., None] - xe[:, :, None, :], self.y_unidad[..., None] - ye[:, :, None, :])
         d = np.where(ve[:, :, None, :], d, np.inf)
@@ -250,7 +255,7 @@ class Batalla:
         vivos_u = self.vivos_por_unidad(vivo)                       # (B,2,U)
         U = cfg.unidades
         xu = self.x_unidad
-        du = np.hypot(xu[None, :, :, None] - xu[None, [1, 0], None, :],
+        du = np.hypot(xu[:, :, :, None] - xu[:, [1, 0], None, :],
                       self.y_unidad[..., None] - self.y_unidad[:, [1, 0], None, :])
         du = np.where(vivos_u[:, [1, 0], None, :] > 0, du, np.inf)
         u_blanco = du.argmin(-1)                                     # (B,2,U)
@@ -376,14 +381,14 @@ class Batalla:
         else:
             factor_pendiente = 1.0
         if cfg.pantano_activo:
-            en_pantano_u = self.en_pantano(self.x_unidad[None], self.y_unidad)
+            en_pantano_u = self.en_pantano(self.x_unidad, self.y_unidad)
             factor_pantano = np.where(en_pantano_u, cfg.pantano_factor_marcha, 1.0)
         else:
             factor_pantano = 1.0
         if cfg.rio_activo:
             y_siguiente_u = self.y_unidad + self.dir[None, :, None] * cfg.marcha_m_tick
             cruzando_franja = self.en_franja_rio(self.y_unidad) | self.en_franja_rio(y_siguiente_u)
-            en_vado_u = self.en_vado(self.x_unidad)[None]
+            en_vado_u = self.en_vado(self.x_unidad)
             bloqueado_por_rio = cruzando_franja & ~en_vado_u
         else:
             bloqueado_por_rio = np.zeros_like(self.y_unidad, dtype=bool)
@@ -396,9 +401,18 @@ class Batalla:
         mueve = (ordenes == AVANZAR) & (vivos_u > 0) & activa[..., 0][..., None] & ~bloqueado_por_rio
         self.y_unidad += mueve * self.dir[None, :, None] * cfg.marcha_m_tick * factor_pendiente * factor_pantano * factor_clima
 
-        # Cansancio (fase 4b): sube al marchar o disparar, baja en reposo.
+        # Movimiento lateral: no lo frena la pendiente (la cresta es un perfil en y
+        # nomas) ni el bloqueo del rio (maniobrar a lo largo de la orilla para
+        # buscar un vado tiene que poder hacerse sin cruzar).
+        puede_mover = (vivos_u > 0) & activa[..., 0][..., None]
+        mueve_izq = (ordenes == IZQUIERDA) & puede_mover
+        mueve_der = (ordenes == DERECHA) & puede_mover
+        self.x_unidad += ((mueve_der.astype(np.float32) - mueve_izq.astype(np.float32)) *
+                           cfg.marcha_m_tick * factor_pantano * factor_clima)
+
+        # Cansancio (fase 4b): sube al marchar (en cualquier direccion) o disparar, baja en reposo.
         if cfg.cansancio_activo:
-            marchando_s = np.take_along_axis(mueve, np.broadcast_to(self.unidad, (B, 2, N)), 2)
+            marchando_s = np.take_along_axis(mueve | mueve_izq | mueve_der, np.broadcast_to(self.unidad, (B, 2, N)), 2)
             sube = marchando_s * cfg.cansancio_por_marcha + dispara * cfg.cansancio_por_disparo
             self.cansancio = np.clip(
                 np.where(sube > 0, self.cansancio + sube, self.cansancio - cfg.cansancio_recuperacion), 0.0, 1.0
@@ -406,7 +420,7 @@ class Batalla:
 
         if self.grabar:
             self.cuadros.append((self.salud[0].copy(), self.y_unidad[0].copy(), dispara[0].copy(),
-                                  impacto[0].copy(), self.huida_y[0].copy()))
+                                  impacto[0].copy(), self.huida_y[0].copy(), self.x_unidad[0].copy()))
 
         # Fin de batalla: aniquilacion total, colapso de moral (si esta activa), o tiempo agotado
         self.t += 1

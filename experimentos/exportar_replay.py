@@ -25,14 +25,13 @@ soldados = [
     for lado in (0, 1) for i in range(b.N) if b.existe[lado, i]
 ]
 ticks = [
-    {"salud": salud.tolist(), "y_unidad": y_unidad.tolist(),
+    {"salud": salud.tolist(), "y_unidad": y_unidad.tolist(), "x_unidad": x_unidad.tolist(),
      "dispara": dispara.tolist(), "impacto": impacto.tolist(), "huida_y": huida_y.tolist()}
-    for salud, y_unidad, dispara, impacto, huida_y in b.cuadros
+    for salud, y_unidad, dispara, impacto, huida_y, x_unidad in b.cuadros
 ]
 datos = {
     "meta": {
         "dir": b.dir.tolist(),
-        "x_unidad": b.x_unidad.tolist(),
         "ganador": int(b.ganador[0]),
         "duracion_ticks": int(b.duracion[0]),
         "tick_s": 5,
